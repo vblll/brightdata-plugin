@@ -94,7 +94,9 @@ Search Google, Bing, or Yandex and get structured results back.
 | `count` | `number` | Results to return, 1–10 |
 | `cursor` | `string` | Pagination cursor for next page |
 | `geo_location` | `string` | 2-letter ISO country code (e.g. `"us"`, `"de"`) |
-| `timeoutSeconds` | `number` | Request timeout override |
+| `timeoutSeconds` | `number` | Request timeout override; Yandex defaults to 120s because async SERP responses can take 40s+ |
+
+Yandex results are normalized from Bright Data markdown: Yandex tracker/search/login URLs are filtered or best-effort unwrapped, and useful links nested inside long SERP snippets are expanded into standard results.
 
 ### `brightdata_search_batch`
 
@@ -279,10 +281,14 @@ All settings can be provided via OpenClaw config and environment variables.
 | API Key | `BRIGHTDATA_API_KEY` or `BRIGHTDATA_API_TOKEN` | `...webSearch.apiKey` | **required** (`BRIGHTDATA_API_KEY` preferred when both env vars are set) |
 | Base URL | `BRIGHTDATA_BASE_URL` | `...webSearch.baseUrl` | `https://api.brightdata.com` |
 | SERP Zone | `BRIGHTDATA_SERP_ZONE` | `...webSearch.serpZone` | **required for search** |
+| Customer ID | `BRIGHTDATA_CUSTOMER_ID` | `...webSearch.customerId` | optional |
+| Yandex API Key | `BRIGHTDATA_YANDEX_SERP_API_TOKEN` | `...webSearch.yandexApiKey` | generic API key |
+| Yandex Customer ID | `BRIGHTDATA_YANDEX_CUSTOMER_ID` | `...webSearch.yandexCustomerId` | generic customer ID |
+| Yandex SERP Zone | `BRIGHTDATA_YANDEX_SERP_ZONE` | `...webSearch.yandexSerpZone` | generic SERP zone |
 | Unlocker Zone | `BRIGHTDATA_UNLOCKER_ZONE` | `...webSearch.unlockerZone` | `mcp_unlocker` |
 | Browser Zone | `BRIGHTDATA_BROWSER_ZONE` | `...webSearch.browserZone` | `mcp_browser` (ignored if `BROWSER_AUTH` is set) |
 | Browser Auth Override | `BROWSER_AUTH` | — | unset |
-| Request Timeout | — | `...webSearch.timeoutSeconds` | `30s` search / `60s` scrape |
+| Request Timeout | — | `...webSearch.timeoutSeconds` | `30s` Google/Bing search, `120s` Yandex search, `60s` scrape |
 | Polling Timeout | — | `...webSearch.pollingTimeoutSeconds` | `600s` |
 
 > Config paths are prefixed with `plugins.entries.brightdata.config`.

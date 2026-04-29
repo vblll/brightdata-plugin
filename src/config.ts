@@ -5,6 +5,7 @@ export const DEFAULT_BRIGHTDATA_BASE_URL = "https://api.brightdata.com";
 export const DEFAULT_BRIGHTDATA_UNLOCKER_ZONE = "mcp_unlocker";
 export const DEFAULT_BRIGHTDATA_BROWSER_ZONE = "mcp_browser";
 export const DEFAULT_BRIGHTDATA_SEARCH_TIMEOUT_SECONDS = 30;
+export const DEFAULT_BRIGHTDATA_YANDEX_SEARCH_TIMEOUT_SECONDS = 120;
 export const DEFAULT_BRIGHTDATA_SCRAPE_TIMEOUT_SECONDS = 60;
 export const DEFAULT_BRIGHTDATA_POLLING_TIMEOUT_SECONDS = 600;
 
@@ -13,6 +14,10 @@ export type BrightDataPluginConfig = {
     apiKey?: unknown;
     baseUrl?: string;
     serpZone?: string;
+    customerId?: string;
+    yandexApiKey?: unknown;
+    yandexCustomerId?: string;
+    yandexSerpZone?: string;
     unlockerZone?: string;
     browserZone?: string;
     timeoutSeconds?: number;
@@ -99,6 +104,53 @@ export function resolveBrightDataSerpZone(
   return configured || undefined;
 }
 
+export function resolveBrightDataCustomerId(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string | undefined {
+  const search = resolveBrightDataSearchConfig(pluginConfig);
+  const configured =
+    readConfiguredString(search?.customerId) ||
+    normalizeSecretInput(process.env.BRIGHTDATA_CUSTOMER_ID) ||
+    "";
+  return configured || undefined;
+}
+
+export function resolveBrightDataYandexApiToken(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string | undefined {
+  const search = resolveBrightDataSearchConfig(pluginConfig);
+  return (
+    normalizeConfiguredSecret(
+      search?.yandexApiKey,
+      "plugins.entries.brightdata.config.webSearch.yandexApiKey",
+    ) ||
+    normalizeSecretInput(process.env.BRIGHTDATA_YANDEX_SERP_API_TOKEN) ||
+    resolveBrightDataApiToken(pluginConfig)
+  );
+}
+
+export function resolveBrightDataYandexCustomerId(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string | undefined {
+  const search = resolveBrightDataSearchConfig(pluginConfig);
+  const configured =
+    readConfiguredString(search?.yandexCustomerId) ||
+    normalizeSecretInput(process.env.BRIGHTDATA_YANDEX_CUSTOMER_ID) ||
+    "";
+  return configured || resolveBrightDataCustomerId(pluginConfig);
+}
+
+export function resolveBrightDataYandexSerpZone(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string | undefined {
+  const search = resolveBrightDataSearchConfig(pluginConfig);
+  const configured =
+    readConfiguredString(search?.yandexSerpZone) ||
+    normalizeSecretInput(process.env.BRIGHTDATA_YANDEX_SERP_ZONE) ||
+    "";
+  return configured || resolveBrightDataSerpZone(pluginConfig);
+}
+
 export function resolveBrightDataBrowserZone(
   pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
 ): string {
@@ -115,6 +167,13 @@ export function resolveBrightDataSearchTimeoutSeconds(override?: number): number
     return Math.floor(override);
   }
   return DEFAULT_BRIGHTDATA_SEARCH_TIMEOUT_SECONDS;
+}
+
+export function resolveBrightDataYandexSearchTimeoutSeconds(override?: number): number {
+  if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+    return Math.floor(override);
+  }
+  return DEFAULT_BRIGHTDATA_YANDEX_SEARCH_TIMEOUT_SECONDS;
 }
 
 export function resolveBrightDataBrowserTimeoutSeconds(

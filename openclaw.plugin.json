@@ -15,6 +15,24 @@
       "label": "Bright Data SERP Zone",
       "help": "Bright Data SERP zone name for search tools (required for brightdata_search and brightdata_search_batch)."
     },
+    "webSearch.customerId": {
+      "label": "Bright Data Customer ID",
+      "help": "Bright Data customer ID for async SERP endpoints (fallback env var: BRIGHTDATA_CUSTOMER_ID)."
+    },
+    "webSearch.yandexApiKey": {
+      "label": "Bright Data Yandex SERP API Key",
+      "help": "Optional Bright Data API key override for Yandex SERP requests (fallback env var: BRIGHTDATA_YANDEX_SERP_API_TOKEN).",
+      "sensitive": true,
+      "placeholder": "..."
+    },
+    "webSearch.yandexCustomerId": {
+      "label": "Bright Data Yandex Customer ID",
+      "help": "Optional Bright Data customer ID override for Yandex async SERP requests (fallback env var: BRIGHTDATA_YANDEX_CUSTOMER_ID)."
+    },
+    "webSearch.yandexSerpZone": {
+      "label": "Bright Data Yandex SERP Zone",
+      "help": "Optional Bright Data SERP zone override for Yandex searches (fallback env var: BRIGHTDATA_YANDEX_SERP_ZONE)."
+    },
     "webSearch.unlockerZone": {
       "label": "Bright Data Unlocker Zone",
       "help": "Bright Data Web Unlocker zone name for scrape tools (default: mcp_unlocker)."
@@ -47,6 +65,18 @@
             "type": "string"
           },
           "serpZone": {
+            "type": "string"
+          },
+          "customerId": {
+            "type": "string"
+          },
+          "yandexApiKey": {
+            "type": ["string", "object"]
+          },
+          "yandexCustomerId": {
+            "type": "string"
+          },
+          "yandexSerpZone": {
             "type": "string"
           },
           "unlockerZone": {
