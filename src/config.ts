@@ -5,6 +5,7 @@ export const DEFAULT_BRIGHTDATA_BASE_URL = "https://api.brightdata.com";
 export const DEFAULT_BRIGHTDATA_UNLOCKER_ZONE = "mcp_unlocker";
 export const DEFAULT_BRIGHTDATA_BROWSER_ZONE = "mcp_browser";
 export const DEFAULT_BRIGHTDATA_SEARCH_TIMEOUT_SECONDS = 30;
+export const DEFAULT_BRIGHTDATA_YANDEX_SEARCH_TIMEOUT_SECONDS = 120;
 export const DEFAULT_BRIGHTDATA_SCRAPE_TIMEOUT_SECONDS = 60;
 export const DEFAULT_BRIGHTDATA_POLLING_TIMEOUT_SECONDS = 600;
 
@@ -166,6 +167,13 @@ export function resolveBrightDataSearchTimeoutSeconds(override?: number): number
     return Math.floor(override);
   }
   return DEFAULT_BRIGHTDATA_SEARCH_TIMEOUT_SECONDS;
+}
+
+export function resolveBrightDataYandexSearchTimeoutSeconds(override?: number): number {
+  if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+    return Math.floor(override);
+  }
+  return DEFAULT_BRIGHTDATA_YANDEX_SEARCH_TIMEOUT_SECONDS;
 }
 
 export function resolveBrightDataBrowserTimeoutSeconds(

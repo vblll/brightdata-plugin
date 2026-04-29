@@ -30,6 +30,7 @@ import {
   resolveBrightDataYandexApiToken,
   resolveBrightDataYandexCustomerId,
   resolveBrightDataYandexSerpZone,
+  resolveBrightDataYandexSearchTimeoutSeconds,
 } from "./config.js";
 
 const SEARCH_CACHE = new Map<
@@ -482,6 +483,7 @@ function resolveGoogleSearchItems(rawData: unknown): BrightDataSearchItem[] {
 
 const RESULT_LINK_LINE_RE =
   /^(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(?:\*\*|__)?\[(.+?)\]\((https?:\/\/[^\s)]+)\)(?:\*\*|__)?(?:\s*(?:[-:|]|[–—])\s*(.+))?$/;
+const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
 
 function normalizeMarkdownLine(value: string): string {
   return value
@@ -573,7 +575,7 @@ export function resolveMarkdownSearchItems(markdown: string): BrightDataSearchIt
     return dedupeSearchItems(items);
   }
 
-  const fallbackMatches = Array.from(markdown.matchAll(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g));
+  const fallbackMatches = Array.from(markdown.matchAll(MARKDOWN_LINK_RE));
   const fallbackItems: BrightDataSearchItem[] = [];
   for (const match of fallbackMatches) {
     const title = match[1]?.trim() ?? "";
@@ -600,12 +602,20 @@ export function resolveBrightDataSearchItems(params: {
   }
   const items = resolveMarkdownSearchItems(params.body);
   if (params.engine === "yandex") {
-    return items.filter((item) => !shouldSkipYandexSearchUrl(item.url));
+    return resolveYandexSearchItems(items);
   }
   return items;
 }
 
 function shouldSkipYandexSearchUrl(urlRaw: string): boolean {
+  return !resolveYandexSearchUrl(urlRaw);
+}
+
+function isYandexHost(host: string): boolean {
+  return /(^|\.)yandex\./.test(host.toLowerCase());
+}
+
+function isYandexNoiseUrl(urlRaw: string): boolean {
   const lowered = urlRaw.trim().toLowerCase();
   if (!lowered) {
     return true;
@@ -616,18 +626,155 @@ function shouldSkipYandexSearchUrl(urlRaw: string): boolean {
   try {
     const url = new URL(urlRaw);
     const host = url.hostname.toLowerCase();
-    return (
-      (host === "yandex.ru" ||
-        host === "www.yandex.ru" ||
-        host === "yandex.com" ||
-        host === "www.yandex.com" ||
-        host.endsWith(".yandex.ru") ||
-        host.endsWith(".yandex.com")) &&
-      url.pathname.includes("/search")
-    );
+    const pathname = url.pathname.toLowerCase();
+    if (!isYandexHost(host)) {
+      return false;
+    }
+    return pathname.includes("/search") || /\/(?:an|ad)\/count(?:\/|$)/.test(pathname);
   } catch {
     return false;
   }
+}
+
+const YANDEX_REDIRECT_TARGET_PARAMS = [
+  "url",
+  "u",
+  "target",
+  "to",
+  "redir",
+  "redirect",
+  "href",
+  "cl4url",
+];
+
+function decodeUrlCandidate(value: string): string[] {
+  const candidates = [value.trim()];
+  let current = value.trim();
+  for (let index = 0; index < 3; index += 1) {
+    try {
+      const decoded = decodeURIComponent(current).trim();
+      if (!decoded || decoded === current) {
+        break;
+      }
+      candidates.push(decoded);
+      current = decoded;
+    } catch {
+      break;
+    }
+  }
+  return candidates;
+}
+
+function normalizeHttpUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveYandexRedirectTarget(url: URL): string | undefined {
+  for (const param of YANDEX_REDIRECT_TARGET_PARAMS) {
+    const value = url.searchParams.get(param);
+    if (!value) {
+      continue;
+    }
+    for (const candidate of decodeUrlCandidate(value)) {
+      const normalized = normalizeHttpUrl(candidate);
+      if (normalized && !isYandexNoiseUrl(normalized)) {
+        return normalized;
+      }
+    }
+  }
+  return undefined;
+}
+
+function resolveYandexSearchUrl(urlRaw: string): string | undefined {
+  const normalized = normalizeHttpUrl(urlRaw);
+  if (!normalized) {
+    return undefined;
+  }
+  if (!isYandexNoiseUrl(normalized)) {
+    return normalized;
+  }
+  try {
+    return resolveYandexRedirectTarget(new URL(normalized));
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeYandexSearchItem(item: BrightDataSearchItem): BrightDataSearchItem | undefined {
+  const url = resolveYandexSearchUrl(item.url);
+  if (!url) {
+    return undefined;
+  }
+  return {
+    ...item,
+    url,
+    siteName: resolveSiteName(url),
+  };
+}
+
+function buildNestedYandexDescription(parent: BrightDataSearchItem, title: string): string {
+  const context = (parent.description ?? "")
+    .replace(MARKDOWN_LINK_RE, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  const description = [parent.title, context].filter((value) => !!value && value !== title).join(": ");
+  return description || parent.title;
+}
+
+function extractNestedYandexDescriptionItems(parent: BrightDataSearchItem): BrightDataSearchItem[] {
+  if (!parent.description) {
+    return [];
+  }
+  const nested: BrightDataSearchItem[] = [];
+  for (const match of parent.description.matchAll(MARKDOWN_LINK_RE)) {
+    const title = match[1]?.trim() ?? "";
+    const rawUrl = match[2]?.trim() ?? "";
+    const url = resolveYandexSearchUrl(rawUrl);
+    if (!title || !url) {
+      continue;
+    }
+    nested.push({
+      title,
+      url,
+      description: buildNestedYandexDescription(parent, title),
+      siteName: resolveSiteName(url),
+    });
+  }
+  return nested;
+}
+
+function dedupeYandexSearchItemsByUrl(items: BrightDataSearchItem[]): BrightDataSearchItem[] {
+  const seen = new Set<string>();
+  const deduped: BrightDataSearchItem[] = [];
+  for (const item of items) {
+    const key = item.url.trim().toLowerCase();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(item);
+  }
+  return deduped;
+}
+
+function resolveYandexSearchItems(items: BrightDataSearchItem[]): BrightDataSearchItem[] {
+  const expanded: BrightDataSearchItem[] = [];
+  for (const item of items) {
+    const normalized = normalizeYandexSearchItem(item);
+    if (normalized) {
+      expanded.push(normalized);
+    }
+    expanded.push(...extractNestedYandexDescriptionItems(item));
+  }
+  return dedupeYandexSearchItemsByUrl(expanded);
 }
 
 function buildSearchPayload(params: {
@@ -809,7 +956,10 @@ export async function runBrightDataSearch(
 ): Promise<Record<string, unknown>> {
   const engine = params.engine ?? "google";
   const count = normalizeSearchCount(params.count);
-  const timeoutSeconds = resolveBrightDataSearchTimeoutSeconds(params.timeoutSeconds);
+  const timeoutSeconds =
+    engine === "yandex"
+      ? resolveBrightDataYandexSearchTimeoutSeconds(params.timeoutSeconds)
+      : resolveBrightDataSearchTimeoutSeconds(params.timeoutSeconds);
   const baseUrl = resolveBrightDataBaseUrl(params.pluginConfig);
   const geoLocation = normalizeGeoLocation(params.geoLocation);
 
@@ -916,7 +1066,10 @@ export async function runBrightDataSearchAsync(
 ): Promise<Record<string, unknown>> {
   const engine = params.engine ?? "google";
   const count = normalizeSearchCount(params.count);
-  const timeoutSeconds = resolveBrightDataSearchTimeoutSeconds(params.timeoutSeconds);
+  const timeoutSeconds =
+    engine === "yandex"
+      ? resolveBrightDataYandexSearchTimeoutSeconds(params.timeoutSeconds)
+      : resolveBrightDataSearchTimeoutSeconds(params.timeoutSeconds);
   const baseUrl = resolveBrightDataBaseUrl(params.pluginConfig);
   const geoLocation = normalizeGeoLocation(params.geoLocation);
 
@@ -1308,5 +1461,6 @@ export const __testing = {
   },
   resolveBrightDataSearchItems,
   resolveMarkdownSearchItems,
+  resolveYandexSearchUrl,
   shouldSkipYandexSearchUrl,
 };

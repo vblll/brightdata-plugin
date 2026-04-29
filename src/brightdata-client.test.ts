@@ -122,7 +122,7 @@ describe("brightdata client helpers", () => {
 
     withTrustedWebToolsEndpointMock.mockImplementation(
       async (
-        params: { url: string; init?: RequestInit },
+        params: { url: string; init?: RequestInit; timeoutSeconds?: number },
         run: (result: { response: Response; finalUrl: string }) => Promise<unknown>,
       ) => {
         const url = new URL(params.url);
@@ -170,6 +170,107 @@ describe("brightdata client helpers", () => {
     expect(withTrustedWebToolsEndpointMock).toHaveBeenCalledTimes(2);
   });
 
+  it("uses a 120 second default timeout for Yandex async search", async () => {
+    process.env.BRIGHTDATA_API_KEY = "default-token";
+    process.env.BRIGHTDATA_CUSTOMER_ID = "customer";
+    process.env.BRIGHTDATA_YANDEX_SERP_ZONE = "yandex-zone";
+
+    withTrustedWebToolsEndpointMock.mockImplementation(
+      async (
+        params: { url: string; timeoutSeconds?: number },
+        run: (result: { response: Response; finalUrl: string }) => Promise<unknown>,
+      ) => {
+        expect(params.timeoutSeconds).toBe(120);
+        const url = new URL(params.url);
+        if (url.pathname === "/serp/yandex/search") {
+          return await run({
+            response: new Response("", {
+              status: 200,
+              headers: { "x-response-id": "response-default-timeout" },
+            }),
+            finalUrl: params.url,
+          });
+        }
+        if (url.pathname === "/serp/get_result") {
+          return await run({
+            response: new Response("[Result](https://example.com)", { status: 200 }),
+            finalUrl: params.url,
+          });
+        }
+        throw new Error(`Unexpected URL in test mock: ${params.url}`);
+      },
+    );
+
+    await runBrightDataSearch({ query: "lumber yandex default timeout", engine: "yandex" });
+  });
+
+  it("keeps the 30 second default timeout for Google search", async () => {
+    process.env.BRIGHTDATA_API_KEY = "default-token";
+    process.env.BRIGHTDATA_SERP_ZONE = "serp-zone";
+
+    withTrustedWebToolsEndpointMock.mockImplementation(
+      async (
+        params: { url: string; timeoutSeconds?: number },
+        run: (result: { response: Response; finalUrl: string }) => Promise<unknown>,
+      ) => {
+        expect(params.timeoutSeconds).toBe(30);
+        return await run({
+          response: new Response(JSON.stringify({ organic: [] }), { status: 200 }),
+          finalUrl: params.url,
+        });
+      },
+    );
+
+    await runBrightDataSearch({ query: "lumber google default timeout", engine: "google" });
+  });
+
+  it("lets Yandex polling complete after the old 30 second timeout", async () => {
+    process.env.BRIGHTDATA_API_KEY = "default-token";
+    process.env.BRIGHTDATA_CUSTOMER_ID = "customer";
+    process.env.BRIGHTDATA_YANDEX_SERP_ZONE = "yandex-zone";
+    vi.useFakeTimers();
+    let pollCount = 0;
+
+    withTrustedWebToolsEndpointMock.mockImplementation(
+      async (
+        params: { url: string },
+        run: (result: { response: Response; finalUrl: string }) => Promise<unknown>,
+      ) => {
+        const url = new URL(params.url);
+        if (url.pathname === "/serp/yandex/search") {
+          return await run({
+            response: new Response("", {
+              status: 200,
+              headers: { "x-response-id": "response-slow-yandex" },
+            }),
+            finalUrl: params.url,
+          });
+        }
+        if (url.pathname === "/serp/get_result") {
+          pollCount += 1;
+          return await run({
+            response:
+              pollCount < 35
+                ? new Response("", { status: 202 })
+                : new Response("[Slow Result](https://example.com/slow)", { status: 200 }),
+            finalUrl: params.url,
+          });
+        }
+        throw new Error(`Unexpected URL in test mock: ${params.url}`);
+      },
+    );
+
+    const resultPromise = runBrightDataSearch({
+      query: "lumber yandex slow default",
+      engine: "yandex",
+    });
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+
+    expect(result).toMatchObject({ count: 1 });
+    expect(pollCount).toBe(35);
+  });
+
   it("uses geo location as the Yandex async country", async () => {
     process.env.BRIGHTDATA_API_KEY = "default-token";
     process.env.BRIGHTDATA_CUSTOMER_ID = "customer";
@@ -177,7 +278,7 @@ describe("brightdata client helpers", () => {
 
     withTrustedWebToolsEndpointMock.mockImplementation(
       async (
-        params: { url: string; init?: RequestInit },
+        params: { url: string; init?: RequestInit; timeoutSeconds?: number },
         run: (result: { response: Response; finalUrl: string }) => Promise<unknown>,
       ) => {
         const url = new URL(params.url);
@@ -212,11 +313,12 @@ describe("brightdata client helpers", () => {
 
     withTrustedWebToolsEndpointMock.mockImplementation(
       async (
-        params: { url: string; init?: RequestInit },
+        params: { url: string; init?: RequestInit; timeoutSeconds?: number },
         run: (result: { response: Response; finalUrl: string }) => Promise<unknown>,
       ) => {
         const url = new URL(params.url);
         expect(params.init?.headers).toMatchObject({ Authorization: "Bearer default-token" });
+        expect(params.timeoutSeconds).toBe(120);
         if (url.pathname === "/serp/yandex/search") {
           return await run({
             response: new Response("", {
@@ -391,5 +493,49 @@ describe("brightdata client helpers", () => {
         siteName: "example.com",
       },
     ]);
+  });
+
+  it("unwraps Yandex tracker URLs and filters unresolvable tracker noise", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Tracker](https://yandex.kz/an/count/abc?url=https%3A%2F%2Fsupplier.example%2Fcatalog)",
+        "[Noise](https://yandex.kz/an/count/empty)",
+        "[Search Redirect](https://yandex.kz/an/count/redirect?url=https%3A%2F%2Fyandex.kz%2Fsearch%2F%3Ftext%3Dlumber)",
+      ].join("\n"),
+    });
+
+    expect(items).toEqual([
+      {
+        title: "Tracker",
+        url: "https://supplier.example/catalog",
+        siteName: "supplier.example",
+      },
+    ]);
+  });
+
+  it("expands useful Yandex description links into additional results", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Yandex aggregate](https://yandex.kz/search/?text=lumber)",
+        "Каталог поставщиков: [Supplier One](https://supplier-one.example/catalog) продает доску.",
+        "Еще вариант: [Supplier Two](https://yandex.kz/an/count/abc?url=https%3A%2F%2Fsupplier-two.example%2Fwood).",
+      ].join("\n"),
+    });
+
+    expect(items).toMatchObject([
+      {
+        title: "Supplier One",
+        url: "https://supplier-one.example/catalog",
+        siteName: "supplier-one.example",
+      },
+      {
+        title: "Supplier Two",
+        url: "https://supplier-two.example/wood",
+        siteName: "supplier-two.example",
+      },
+    ]);
+    expect(items[0]?.description).toContain("Yandex aggregate");
   });
 });
