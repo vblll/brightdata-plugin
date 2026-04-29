@@ -532,6 +532,51 @@ describe("brightdata client helpers", () => {
     ]);
   });
 
+  it("removes Yandex ad tracker blocks from descriptions while keeping useful links", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Useful aggregate](https://jobrun.ru/company/remkor) -",
+        "[](https://yabs.yandex.kz/count/WmyejI_zOo?mirror-type=1&mirror-doc-pos=-1)",
+        "Wazzup24.ru wazzup24.ru › Интеграция-Whatsapp...",
+        "[ ## Wazzup - сервис для интеграции WhatsApp с 1С ](https://wazzup24.ru/)",
+        "Реклама Wazzup - это сервис для управления продажами в Ватсап из 1С.",
+        "Полезная ссылка: [РЕМКОР](https://sevastopol.mjobs.ru/vacancy/490727/) Крупная производственная компания.",
+      ].join(" "),
+    });
+
+    const aggregate = items.find((item) => item.url === "https://jobrun.ru/company/remkor");
+    const remkor = items.find((item) => item.url === "https://sevastopol.mjobs.ru/vacancy/490727/");
+
+    expect(aggregate?.description).toContain("Полезная ссылка");
+    expect(aggregate?.description).not.toContain("yabs.yandex");
+    expect(aggregate?.description).not.toContain("Реклама");
+    expect(aggregate?.description).not.toContain("mirror-type");
+    expect(remkor?.title).toBe("РЕМКОР");
+  });
+
+  it("removes Yandex internal JSON fragments from descriptions", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Useful aggregate](https://finder.work/company/remkor)",
+        '{"1_lsog0":{"state":{"query":"\\"1С:УПП\\" \\"Крым\\" компания","backendUrl":"https://yandex.kz/neuralsearch/api?rdrnd=392692","encryptedCalleeContext":"secret","globalStoreProps":{"advChatParams":{"text":"Реклама"}}},"type":"futuris-search-tab"}}',
+        '"feedbackBaseProps":{"metaFields":{"userTestids":"1543013","queryText":"\\"1С:УПП\\"","pageUrl":"https://yandex.kz/search/?text=test"},"featureName":"Футурис серп"}',
+        "Обычный полезный сниппет про компанию РЕМКОР.",
+      ].join("\n"),
+    });
+
+    const aggregate = items.find((item) => item.url === "https://finder.work/company/remkor");
+
+    expect(aggregate?.description).toContain("Обычный полезный сниппет");
+    expect(aggregate?.description).not.toContain("backendUrl");
+    expect(aggregate?.description).not.toContain("encryptedCalleeContext");
+    expect(aggregate?.description).not.toContain("globalStoreProps");
+    expect(aggregate?.description).not.toContain("feedbackBaseProps");
+    expect(aggregate?.description).not.toContain("userTestids");
+    expect(aggregate?.description).not.toContain("futuris-search-tab");
+  });
+
   it("expands useful Yandex description links into additional results", () => {
     const items = __testing.resolveBrightDataSearchItems({
       engine: "yandex",

@@ -486,6 +486,18 @@ const RESULT_LINK_LINE_RE =
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
 const YANDEX_NESTED_SERP_BLOCK_RE =
   /\[\]\((https?:\/\/[^\s)]+)\)\s*.*?\[\s*(?:#{1,6}\s*)?(.+?)\s*\]\((https?:\/\/[^\s)]+)\)/g;
+const YANDEX_AD_BLOCK_RE =
+  /\[\]\((?:https?:\/\/)?[^)]*yabs\.yandex\.[^)]+\)[\s\S]*?Реклама[^.!?]*(?:[.!?]|$)/giu;
+const YANDEX_INTERNAL_JSON_MARKERS = [
+  "backendurl",
+  "encryptedcalleecontext",
+  "globalstoreprops",
+  "feedbackbaseprops",
+  "usertestids",
+  "advchatparams",
+  "futuris",
+  "futuris-search-tab",
+];
 
 function normalizeMarkdownLine(value: string): string {
   return value
@@ -715,11 +727,95 @@ function normalizeYandexSearchItem(item: BrightDataSearchItem): BrightDataSearch
   if (!url) {
     return undefined;
   }
+  const description = sanitizeYandexDescription(item.description);
   return {
     ...item,
     url,
+    description,
     siteName: resolveSiteName(url),
   };
+}
+
+function findBalancedObjectEnd(value: string, openIndex: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = openIndex; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function removeYandexInternalJsonFragments(value: string): string {
+  let cleaned = value;
+  while (true) {
+    const lowered = cleaned.toLowerCase();
+    const markerIndex = YANDEX_INTERNAL_JSON_MARKERS.map((marker) => lowered.indexOf(marker))
+      .filter((index) => index >= 0)
+      .sort((left, right) => left - right)[0];
+    if (markerIndex === undefined) {
+      return cleaned;
+    }
+
+    const objectStartBeforeMarker = cleaned.lastIndexOf("{", markerIndex);
+    const objectStartAfterMarker = cleaned.indexOf("{", markerIndex);
+    const objectStart =
+      objectStartBeforeMarker >= 0 ? objectStartBeforeMarker : objectStartAfterMarker;
+    if (objectStart < 0) {
+      return cleaned.slice(0, markerIndex).trim();
+    }
+
+    const objectEnd = findBalancedObjectEnd(cleaned, objectStart);
+    if (objectEnd < 0) {
+      return cleaned.slice(0, objectStart).trim();
+    }
+
+    const keyStart = cleaned.lastIndexOf('"', objectStart - 1);
+    const removeStart =
+      keyStart >= 0 && cleaned.slice(keyStart, objectStart).includes(":") ? keyStart : objectStart;
+    cleaned = `${cleaned.slice(0, removeStart)} ${cleaned.slice(objectEnd + 1)}`;
+  }
+}
+
+function sanitizeYandexDescription(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const withoutAdBlocks = value.replace(YANDEX_AD_BLOCK_RE, " ");
+  const withoutTrackerLinks = withoutAdBlocks.replace(MARKDOWN_LINK_RE, (full, title, url) => {
+    const resolved = resolveYandexSearchUrl(String(url));
+    if (!resolved) {
+      return " ";
+    }
+    return resolved === String(url) ? full : `[${String(title).trim()}](${resolved})`;
+  });
+  const withoutInternalJson = removeYandexInternalJsonFragments(withoutTrackerLinks);
+  const cleaned = withoutInternalJson.replace(/\s+/g, " ").trim();
+  return cleaned || undefined;
 }
 
 function cleanYandexSearchText(value: string): string {
@@ -733,7 +829,7 @@ function cleanYandexSearchText(value: string): string {
 }
 
 function buildNestedYandexDescription(parent: BrightDataSearchItem, title: string): string {
-  const context = (parent.description ?? "")
+  const context = (sanitizeYandexDescription(parent.description) ?? "")
     .replace(MARKDOWN_LINK_RE, "$1")
     .replace(/\s+/g, " ")
     .trim();
@@ -742,10 +838,11 @@ function buildNestedYandexDescription(parent: BrightDataSearchItem, title: strin
 }
 
 function extractNestedYandexSerpBlockItems(parent: BrightDataSearchItem): BrightDataSearchItem[] {
-  if (!parent.description) {
+  const parentDescription = sanitizeYandexDescription(parent.description);
+  if (!parentDescription) {
     return [];
   }
-  const matches = Array.from(parent.description.matchAll(YANDEX_NESTED_SERP_BLOCK_RE));
+  const matches = Array.from(parentDescription.matchAll(YANDEX_NESTED_SERP_BLOCK_RE));
   const nested: BrightDataSearchItem[] = [];
   for (let index = 0; index < matches.length; index += 1) {
     const match = matches[index];
@@ -756,8 +853,8 @@ function extractNestedYandexSerpBlockItems(parent: BrightDataSearchItem): Bright
       continue;
     }
     const snippetStart = (match.index ?? 0) + match[0].length;
-    const snippetEnd = matches[index + 1]?.index ?? parent.description.length;
-    const snippet = cleanYandexSearchText(parent.description.slice(snippetStart, snippetEnd));
+    const snippetEnd = matches[index + 1]?.index ?? parentDescription.length;
+    const snippet = cleanYandexSearchText(parentDescription.slice(snippetStart, snippetEnd));
     nested.push({
       title,
       url,
@@ -769,12 +866,14 @@ function extractNestedYandexSerpBlockItems(parent: BrightDataSearchItem): Bright
 }
 
 function extractNestedYandexDescriptionItems(parent: BrightDataSearchItem): BrightDataSearchItem[] {
-  if (!parent.description) {
+  const parentDescription = sanitizeYandexDescription(parent.description);
+  if (!parentDescription) {
     return [];
   }
-  const blockItems = extractNestedYandexSerpBlockItems(parent);
+  const sanitizedParent = { ...parent, description: parentDescription };
+  const blockItems = extractNestedYandexSerpBlockItems(sanitizedParent);
   const nested: BrightDataSearchItem[] = [];
-  for (const match of parent.description.matchAll(MARKDOWN_LINK_RE)) {
+  for (const match of parentDescription.matchAll(MARKDOWN_LINK_RE)) {
     const title = match[1]?.trim() ?? "";
     const rawUrl = match[2]?.trim() ?? "";
     const url = resolveYandexSearchUrl(rawUrl);
@@ -784,7 +883,7 @@ function extractNestedYandexDescriptionItems(parent: BrightDataSearchItem): Brig
     nested.push({
       title,
       url,
-      description: buildNestedYandexDescription(parent, title),
+      description: buildNestedYandexDescription(sanitizedParent, title),
       siteName: resolveSiteName(url),
     });
   }
@@ -808,16 +907,17 @@ function dedupeYandexSearchItemsByUrl(items: BrightDataSearchItem[]): BrightData
 function resolveYandexSearchItems(items: BrightDataSearchItem[]): BrightDataSearchItem[] {
   const expanded: BrightDataSearchItem[] = [];
   for (const item of items) {
-    const blockItems = extractNestedYandexSerpBlockItems(item);
-    const normalized = normalizeYandexSearchItem(item);
+    const sanitizedItem = { ...item, description: sanitizeYandexDescription(item.description) };
+    const blockItems = extractNestedYandexSerpBlockItems(sanitizedItem);
+    const normalized = normalizeYandexSearchItem(sanitizedItem);
     if (normalized) {
       expanded.push(normalized);
     } else if (blockItems.length > 0) {
-      expanded.push(item);
+      expanded.push(sanitizedItem);
     }
     expanded.push(...blockItems);
     if (blockItems.length === 0) {
-      expanded.push(...extractNestedYandexDescriptionItems(item));
+      expanded.push(...extractNestedYandexDescriptionItems(sanitizedItem));
     }
   }
   return dedupeYandexSearchItemsByUrl(expanded);
