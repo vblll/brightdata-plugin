@@ -82,6 +82,10 @@ describe("brightdata manifest schema surfaces", () => {
     expect(properties.apiKey).toBeTruthy();
     expect(properties.baseUrl).toMatchObject({ type: "string" });
     expect(properties.serpZone).toMatchObject({ type: "string" });
+    expect(properties.customerId).toMatchObject({ type: "string" });
+    expect(properties.yandexApiKey).toMatchObject({ type: ["string", "object"] });
+    expect(properties.yandexCustomerId).toMatchObject({ type: "string" });
+    expect(properties.yandexSerpZone).toMatchObject({ type: "string" });
     expect(properties.unlockerZone).toMatchObject({ type: "string" });
     expect(properties.browserZone).toMatchObject({ type: "string" });
     expect(properties.timeoutSeconds).toMatchObject({ type: "integer", minimum: 1 });
@@ -96,6 +100,17 @@ describe("brightdata manifest schema surfaces", () => {
     );
     expect(lookup?.path).toBe("plugins.entries.brightdata.config.webSearch.browserZone");
     expect(lookup?.hint?.label).toBe("Bright Data Browser Zone");
+    expect(lookup?.schema).toMatchObject({ type: "string" });
+  });
+
+  it("supports config schema lookup for Yandex SERP zone paths", () => {
+    const manifest = readBrightDataManifest();
+    const lookup = lookupManifestConfigSchema(
+      manifest,
+      "plugins.entries.brightdata.config.webSearch.yandexSerpZone",
+    );
+    expect(lookup?.path).toBe("plugins.entries.brightdata.config.webSearch.yandexSerpZone");
+    expect(lookup?.hint?.label).toBe("Bright Data Yandex SERP Zone");
     expect(lookup?.schema).toMatchObject({ type: "string" });
   });
 });
