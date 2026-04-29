@@ -27,6 +27,9 @@ import {
   resolveBrightDataSerpZone,
   resolveBrightDataSearchTimeoutSeconds,
   resolveBrightDataUnlockerZone,
+  resolveBrightDataYandexApiToken,
+  resolveBrightDataYandexCustomerId,
+  resolveBrightDataYandexSerpZone,
 } from "./config.js";
 
 const SEARCH_CACHE = new Map<
@@ -595,7 +598,36 @@ export function resolveBrightDataSearchItems(params: {
       return [];
     }
   }
-  return resolveMarkdownSearchItems(params.body);
+  const items = resolveMarkdownSearchItems(params.body);
+  if (params.engine === "yandex") {
+    return items.filter((item) => !shouldSkipYandexSearchUrl(item.url));
+  }
+  return items;
+}
+
+function shouldSkipYandexSearchUrl(urlRaw: string): boolean {
+  const lowered = urlRaw.trim().toLowerCase();
+  if (!lowered) {
+    return true;
+  }
+  if (lowered.includes("yabs.yandex.") || lowered.includes("passport.yandex.")) {
+    return true;
+  }
+  try {
+    const url = new URL(urlRaw);
+    const host = url.hostname.toLowerCase();
+    return (
+      (host === "yandex.ru" ||
+        host === "www.yandex.ru" ||
+        host === "yandex.com" ||
+        host === "www.yandex.com" ||
+        host.endsWith(".yandex.ru") ||
+        host.endsWith(".yandex.com")) &&
+      url.pathname.includes("/search")
+    );
+  } catch {
+    return false;
+  }
 }
 
 function buildSearchPayload(params: {
@@ -633,6 +665,30 @@ function buildSearchPayload(params: {
 
 function resolveApiKeyMissingMessage(toolName: string): string {
   return `${toolName} needs a Bright Data API key. Set BRIGHTDATA_API_KEY (preferred) or BRIGHTDATA_API_TOKEN in the Gateway environment, or configure plugins.entries.brightdata.config.webSearch.apiKey.`;
+}
+
+function resolveYandexCustomerIdRequired(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string {
+  const customerId = resolveBrightDataYandexCustomerId(pluginConfig);
+  if (!customerId) {
+    throw new Error(
+      "Bright Data Yandex async search requires a customer ID. Set BRIGHTDATA_YANDEX_CUSTOMER_ID or BRIGHTDATA_CUSTOMER_ID in the environment, or configure plugins.entries.brightdata.config.webSearch.yandexCustomerId.",
+    );
+  }
+  return customerId;
+}
+
+function resolveYandexSerpZoneRequired(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string {
+  const serpZone = resolveBrightDataYandexSerpZone(pluginConfig);
+  if (!serpZone) {
+    throw new Error(
+      "Bright Data Yandex async search requires a SERP zone. Set BRIGHTDATA_YANDEX_SERP_ZONE or BRIGHTDATA_SERP_ZONE in the environment, or configure plugins.entries.brightdata.config.webSearch.yandexSerpZone.",
+    );
+  }
+  return serpZone;
 }
 
 function resolveSerpZoneRequired(
@@ -677,19 +733,131 @@ function buildBrightDataSerpRequestBody(params: {
   };
 }
 
-export async function runBrightDataSearch(
-  params: BrightDataSearchParams,
+async function runBrightDataYandexAsyncSearch(
+  params: BrightDataSearchParams & {
+    count: number;
+    timeoutSeconds: number;
+    baseUrl: string;
+    geoLocation?: string;
+  },
 ): Promise<Record<string, unknown>> {
-  const apiToken = resolveBrightDataApiToken(params.pluginConfig);
+  const apiToken = resolveBrightDataYandexApiToken(params.pluginConfig);
   if (!apiToken) {
     throw new Error(resolveApiKeyMissingMessage("web_search (brightdata)"));
   }
+  const customerId = resolveYandexCustomerIdRequired(params.pluginConfig);
+  const serpZone = resolveYandexSerpZoneRequired(params.pluginConfig);
+  const startedAt = Date.now();
+
+  const submitResponse = await requestBrightDataRaw({
+    baseUrl: params.baseUrl,
+    pathname: "/serp/yandex/search",
+    apiToken,
+    timeoutSeconds: params.timeoutSeconds,
+    errorLabel: "Bright Data Yandex async submit",
+    queryParams: { customer: customerId, zone: serpZone },
+    serpZone,
+    asyncSerp: true,
+    body: {
+      country: normalizeGeoLocation(params.geoLocation) ?? "ru",
+      query: { text: params.query },
+    },
+  });
+  const responseId = submitResponse.headers.get("x-response-id")?.trim();
+  if (!responseId) {
+    throw new Error(
+      `Bright Data async Yandex search did not return x-response-id for SERP zone "${serpZone}". Ensure async is enabled for that zone and retry.`,
+    );
+  }
+
+  while (Date.now() - startedAt < params.timeoutSeconds * 1_000) {
+    const pollResponse = await requestBrightDataRaw({
+      baseUrl: params.baseUrl,
+      pathname: "/serp/get_result",
+      apiToken,
+      timeoutSeconds: params.timeoutSeconds,
+      errorLabel: "Bright Data Yandex async result",
+      queryParams: { customer: customerId, zone: serpZone, response_id: responseId },
+      serpZone,
+      asyncSerp: true,
+    });
+    if (ASYNC_SERP_PENDING_STATUS_CODES.has(pollResponse.status) || !pollResponse.text.trim()) {
+      await sleep(DEFAULT_POLL_INTERVAL_MS);
+      continue;
+    }
+
+    return buildSearchPayload({
+      query: params.query,
+      engine: "yandex",
+      cursor: params.cursor,
+      geoLocation: params.geoLocation,
+      items: resolveBrightDataSearchItems({ engine: "yandex", body: pollResponse.text }).slice(
+        0,
+        params.count,
+      ),
+      tookMs: Date.now() - startedAt,
+    });
+  }
+
+  throw new Error(
+    `Timeout after ${params.timeoutSeconds} seconds waiting for Bright Data async Yandex SERP response (${responseId}).`,
+  );
+}
+
+export async function runBrightDataSearch(
+  params: BrightDataSearchParams,
+): Promise<Record<string, unknown>> {
   const engine = params.engine ?? "google";
   const count = normalizeSearchCount(params.count);
   const timeoutSeconds = resolveBrightDataSearchTimeoutSeconds(params.timeoutSeconds);
   const baseUrl = resolveBrightDataBaseUrl(params.pluginConfig);
-  const serpZone = resolveSerpZoneRequired(params.pluginConfig);
   const geoLocation = normalizeGeoLocation(params.geoLocation);
+
+  if (engine === "yandex") {
+    const yandexApiToken = resolveBrightDataYandexApiToken(params.pluginConfig);
+    if (!yandexApiToken) {
+      throw new Error(resolveApiKeyMissingMessage("web_search (brightdata)"));
+    }
+    const customerId = resolveYandexCustomerIdRequired(params.pluginConfig);
+    const serpZone = resolveYandexSerpZoneRequired(params.pluginConfig);
+    const cacheKey = normalizeCacheKey(
+      JSON.stringify({
+        type: "brightdata-search-yandex-async",
+        query: params.query,
+        engine,
+        count,
+        cursor: params.cursor ?? "",
+        geoLocation: geoLocation ?? "",
+        baseUrl,
+        customerId,
+        serpZone,
+      }),
+    );
+    const cached = readCache(SEARCH_CACHE, cacheKey);
+    if (cached) {
+      return { ...cached.value, cached: true };
+    }
+    const result = await runBrightDataYandexAsyncSearch({
+      ...params,
+      count,
+      timeoutSeconds,
+      baseUrl,
+      geoLocation,
+    });
+    writeCache(
+      SEARCH_CACHE,
+      cacheKey,
+      result,
+      resolveCacheTtlMs(undefined, DEFAULT_CACHE_TTL_MINUTES),
+    );
+    return result;
+  }
+
+  const apiToken = resolveBrightDataApiToken(params.pluginConfig);
+  if (!apiToken) {
+    throw new Error(resolveApiKeyMissingMessage("web_search (brightdata)"));
+  }
+  const serpZone = resolveSerpZoneRequired(params.pluginConfig);
   const cacheKey = normalizeCacheKey(
     JSON.stringify({
       type: "brightdata-search",
@@ -746,16 +914,27 @@ export async function runBrightDataSearch(
 export async function runBrightDataSearchAsync(
   params: BrightDataSearchParams,
 ): Promise<Record<string, unknown>> {
-  const apiToken = resolveBrightDataApiToken(params.pluginConfig);
-  if (!apiToken) {
-    throw new Error(resolveApiKeyMissingMessage("brightdata_search_batch"));
-  }
   const engine = params.engine ?? "google";
   const count = normalizeSearchCount(params.count);
   const timeoutSeconds = resolveBrightDataSearchTimeoutSeconds(params.timeoutSeconds);
   const baseUrl = resolveBrightDataBaseUrl(params.pluginConfig);
-  const serpZone = resolveSerpZoneRequired(params.pluginConfig);
   const geoLocation = normalizeGeoLocation(params.geoLocation);
+
+  if (engine === "yandex") {
+    return await runBrightDataYandexAsyncSearch({
+      ...params,
+      count,
+      timeoutSeconds,
+      baseUrl,
+      geoLocation,
+    });
+  }
+
+  const apiToken = resolveBrightDataApiToken(params.pluginConfig);
+  if (!apiToken) {
+    throw new Error(resolveApiKeyMissingMessage("brightdata_search_batch"));
+  }
+  const serpZone = resolveSerpZoneRequired(params.pluginConfig);
   const requestUrl = buildBrightDataSerpRequestUrl({
     query: params.query,
     engine,
@@ -1129,4 +1308,5 @@ export const __testing = {
   },
   resolveBrightDataSearchItems,
   resolveMarkdownSearchItems,
+  shouldSkipYandexSearchUrl,
 };

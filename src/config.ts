@@ -13,6 +13,10 @@ export type BrightDataPluginConfig = {
     apiKey?: unknown;
     baseUrl?: string;
     serpZone?: string;
+    customerId?: string;
+    yandexApiKey?: unknown;
+    yandexCustomerId?: string;
+    yandexSerpZone?: string;
     unlockerZone?: string;
     browserZone?: string;
     timeoutSeconds?: number;
@@ -97,6 +101,53 @@ export function resolveBrightDataSerpZone(
     normalizeSecretInput(process.env.BRIGHTDATA_SERP_ZONE) ||
     "";
   return configured || undefined;
+}
+
+export function resolveBrightDataCustomerId(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string | undefined {
+  const search = resolveBrightDataSearchConfig(pluginConfig);
+  const configured =
+    readConfiguredString(search?.customerId) ||
+    normalizeSecretInput(process.env.BRIGHTDATA_CUSTOMER_ID) ||
+    "";
+  return configured || undefined;
+}
+
+export function resolveBrightDataYandexApiToken(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string | undefined {
+  const search = resolveBrightDataSearchConfig(pluginConfig);
+  return (
+    normalizeConfiguredSecret(
+      search?.yandexApiKey,
+      "plugins.entries.brightdata.config.webSearch.yandexApiKey",
+    ) ||
+    normalizeSecretInput(process.env.BRIGHTDATA_YANDEX_SERP_API_TOKEN) ||
+    resolveBrightDataApiToken(pluginConfig)
+  );
+}
+
+export function resolveBrightDataYandexCustomerId(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string | undefined {
+  const search = resolveBrightDataSearchConfig(pluginConfig);
+  const configured =
+    readConfiguredString(search?.yandexCustomerId) ||
+    normalizeSecretInput(process.env.BRIGHTDATA_YANDEX_CUSTOMER_ID) ||
+    "";
+  return configured || resolveBrightDataCustomerId(pluginConfig);
+}
+
+export function resolveBrightDataYandexSerpZone(
+  pluginConfig?: Record<string, unknown> | BrightDataPluginConfig,
+): string | undefined {
+  const search = resolveBrightDataSearchConfig(pluginConfig);
+  const configured =
+    readConfiguredString(search?.yandexSerpZone) ||
+    normalizeSecretInput(process.env.BRIGHTDATA_YANDEX_SERP_ZONE) ||
+    "";
+  return configured || resolveBrightDataSerpZone(pluginConfig);
 }
 
 export function resolveBrightDataBrowserZone(
