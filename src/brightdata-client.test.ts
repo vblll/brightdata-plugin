@@ -24,6 +24,24 @@ const ORIGINAL_ENV = {
   BRIGHTDATA_YANDEX_SERP_ZONE: process.env.BRIGHTDATA_YANDEX_SERP_ZONE,
 };
 
+const YANDEX_NESTED_SERP_MARKDOWN = [
+  "[](https://simferopol.1cbit.ru/vacancy/) Simferopol.1cbit.ru simferopol.1cbit.ru › vacancy",
+  "[ ## Работа в it-компании и **вакансии** **1****С** в Симферополе от... ](https://simferopol.1cbit.ru/vacancy/)",
+  "Требуются сотрудники на постоянную работу как в офисе г. Симферополь, так и удаленно.",
+  "[](https://it-vacancies.ru/vacancies/303796/) It-vacancies.ru it-vacancies.ru › vacancies",
+  "[ ## **Вакансия** программист **1****с**:**упп**, **1****с**:бух, **1****с**:зиуп в городе... ](https://it-vacancies.ru/vacancies/303796/)",
+  "Требуется программист **1****с**:**упп**, **1****с**:бух, **1****с**:зиуп для работы в «SPETZ» в городе Симферополь.",
+  "[](https://dzhankoy.cataloxy.ru/rabota/vacancy1096430410_programmist-1s-erp-upp.htm) Dzhankoy.Cataloxy.ru dzhankoy.cataloxy.ru › rabota › vacancy1096430410",
+  "[ ## Работа Программист **1****С** (ERP, **УПП**) в Джанкое в компании... ](https://dzhankoy.cataloxy.ru/rabota/vacancy1096430410_programmist-1s-erp-upp.htm)",
+  "**Вакансия** в архиве. Завод молочной продукции «НОВАТОР» - ключевая компания в **Крыму** и надежный работодатель.",
+  "[](https://sevastopol.gorodrabot.ru/%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%81%D1%82_1%D1%81%D0%B7%D1%83%D0%BF) Sevastopol.Gorodrabot.ru sevastopol.gorodrabot.ru › программист\\_1сзуп",
+  "[ ## Работа программистом 1с:зуп в Севастополе — 47 свежих... ](https://sevastopol.gorodrabot.ru/%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%81%D1%82_1%D1%81%D0%B7%D1%83%D0%BF)",
+  "**РЕМКОР**. ... сопровождение конфигураций 1С (**УПП** 1.3, БП КОРП 3.0, ЗУП КОРП ... существующего кода",
+  "[](https://sevastopol.mjobs.ru/vacancy/490727/) Sevastopol.Mjobs.ru sevastopol.mjobs.ru › vacancy",
+  "[ ## Вакансия Программист 1С работа в Севастополе зарплата... ](https://sevastopol.mjobs.ru/vacancy/490727/)",
+  'Крупная производственная компания СФ ООО "**РЕМКОР**", специализирующаяся в области судоремонтного производства.',
+].join(" ");
+
 beforeEach(() => {
   withTrustedWebToolsEndpointMock.mockReset();
   vi.useRealTimers();
@@ -537,5 +555,74 @@ describe("brightdata client helpers", () => {
       },
     ]);
     expect(items[0]?.description).toContain("Yandex aggregate");
+  });
+
+  it("keeps Yandex aggregate descriptions so count limits do not erase nested lead names", async () => {
+    process.env.BRIGHTDATA_API_KEY = "default-token";
+    process.env.BRIGHTDATA_CUSTOMER_ID = "customer";
+    process.env.BRIGHTDATA_YANDEX_SERP_ZONE = "yandex-zone";
+
+    withTrustedWebToolsEndpointMock.mockImplementation(
+      async (
+        params: { url: string },
+        run: (result: { response: Response; finalUrl: string }) => Promise<unknown>,
+      ) => {
+        const url = new URL(params.url);
+        if (url.pathname === "/serp/yandex/search") {
+          return await run({
+            response: new Response("", {
+              status: 200,
+              headers: { "x-response-id": "response-aggregate-description" },
+            }),
+            finalUrl: params.url,
+          });
+        }
+        if (url.pathname === "/serp/get_result") {
+          return await run({
+            response: new Response(
+              `[Yandex aggregate](https://yandex.kz/search/?text=1c) - ${YANDEX_NESTED_SERP_MARKDOWN}`,
+              { status: 200 },
+            ),
+            finalUrl: params.url,
+          });
+        }
+        throw new Error(`Unexpected URL in test mock: ${params.url}`);
+      },
+    );
+
+    const result = await runBrightDataSearch({
+      query: "1c crimea leads",
+      engine: "yandex",
+      count: 1,
+    });
+    const results = result.results as Array<{ description?: string; url?: string }>;
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.url).toBe("https://yandex.kz/search/?text=1c");
+    expect(results[0]?.description).toContain("SPETZ");
+    expect(results[0]?.description).toContain("НОВАТОР");
+    expect(results[0]?.description).toContain("РЕМКОР");
+  });
+
+  it("extracts Yandex nested SERP blocks with block-specific descriptions", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: `[Yandex aggregate](https://yandex.kz/search/?text=1c) - ${YANDEX_NESTED_SERP_MARKDOWN}`,
+    });
+
+    const spetz = items.find((item) => item.url === "https://it-vacancies.ru/vacancies/303796/");
+    const novator = items.find((item) =>
+      item.url.includes("dzhankoy.cataloxy.ru/rabota/vacancy1096430410"),
+    );
+    const remkor = items.find((item) =>
+      item.url.includes("sevastopol.gorodrabot.ru/%D0%BF%D1%80%D0%BE%D0%B3"),
+    );
+
+    expect(spetz?.description).toContain("SPETZ");
+    expect(spetz?.description).not.toContain("НОВАТОР");
+    expect(novator?.description).toContain("НОВАТОР");
+    expect(novator?.description).not.toContain("SPETZ");
+    expect(remkor?.description).toContain("РЕМКОР");
+    expect(remkor?.description).not.toContain("НОВАТОР");
   });
 });

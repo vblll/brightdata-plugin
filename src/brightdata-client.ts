@@ -484,6 +484,8 @@ function resolveGoogleSearchItems(rawData: unknown): BrightDataSearchItem[] {
 const RESULT_LINK_LINE_RE =
   /^(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(?:\*\*|__)?\[(.+?)\]\((https?:\/\/[^\s)]+)\)(?:\*\*|__)?(?:\s*(?:[-:|]|[–—])\s*(.+))?$/;
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+const YANDEX_NESTED_SERP_BLOCK_RE =
+  /\[\]\((https?:\/\/[^\s)]+)\)\s*.*?\[\s*(?:#{1,6}\s*)?(.+?)\s*\]\((https?:\/\/[^\s)]+)\)/g;
 
 function normalizeMarkdownLine(value: string): string {
   return value
@@ -720,6 +722,16 @@ function normalizeYandexSearchItem(item: BrightDataSearchItem): BrightDataSearch
   };
 }
 
+function cleanYandexSearchText(value: string): string {
+  return normalizeMarkdownLine(value)
+    .replace(/^#{1,6}\s*/, "")
+    .replace(/\*\*/g, "")
+    .replace(/__/g, "")
+    .replace(/\\_/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function buildNestedYandexDescription(parent: BrightDataSearchItem, title: string): string {
   const context = (parent.description ?? "")
     .replace(MARKDOWN_LINK_RE, "$1")
@@ -729,10 +741,38 @@ function buildNestedYandexDescription(parent: BrightDataSearchItem, title: strin
   return description || parent.title;
 }
 
+function extractNestedYandexSerpBlockItems(parent: BrightDataSearchItem): BrightDataSearchItem[] {
+  if (!parent.description) {
+    return [];
+  }
+  const matches = Array.from(parent.description.matchAll(YANDEX_NESTED_SERP_BLOCK_RE));
+  const nested: BrightDataSearchItem[] = [];
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const title = cleanYandexSearchText(match[2] ?? "");
+    const rawUrl = (match[3] || match[1] || "").trim();
+    const url = resolveYandexSearchUrl(rawUrl);
+    if (!title || !url) {
+      continue;
+    }
+    const snippetStart = (match.index ?? 0) + match[0].length;
+    const snippetEnd = matches[index + 1]?.index ?? parent.description.length;
+    const snippet = cleanYandexSearchText(parent.description.slice(snippetStart, snippetEnd));
+    nested.push({
+      title,
+      url,
+      description: snippet || parent.title,
+      siteName: resolveSiteName(url),
+    });
+  }
+  return nested;
+}
+
 function extractNestedYandexDescriptionItems(parent: BrightDataSearchItem): BrightDataSearchItem[] {
   if (!parent.description) {
     return [];
   }
+  const blockItems = extractNestedYandexSerpBlockItems(parent);
   const nested: BrightDataSearchItem[] = [];
   for (const match of parent.description.matchAll(MARKDOWN_LINK_RE)) {
     const title = match[1]?.trim() ?? "";
@@ -748,7 +788,7 @@ function extractNestedYandexDescriptionItems(parent: BrightDataSearchItem): Brig
       siteName: resolveSiteName(url),
     });
   }
-  return nested;
+  return [...blockItems, ...nested];
 }
 
 function dedupeYandexSearchItemsByUrl(items: BrightDataSearchItem[]): BrightDataSearchItem[] {
@@ -768,11 +808,17 @@ function dedupeYandexSearchItemsByUrl(items: BrightDataSearchItem[]): BrightData
 function resolveYandexSearchItems(items: BrightDataSearchItem[]): BrightDataSearchItem[] {
   const expanded: BrightDataSearchItem[] = [];
   for (const item of items) {
+    const blockItems = extractNestedYandexSerpBlockItems(item);
     const normalized = normalizeYandexSearchItem(item);
     if (normalized) {
       expanded.push(normalized);
+    } else if (blockItems.length > 0) {
+      expanded.push(item);
     }
-    expanded.push(...extractNestedYandexDescriptionItems(item));
+    expanded.push(...blockItems);
+    if (blockItems.length === 0) {
+      expanded.push(...extractNestedYandexDescriptionItems(item));
+    }
   }
   return dedupeYandexSearchItemsByUrl(expanded);
 }
