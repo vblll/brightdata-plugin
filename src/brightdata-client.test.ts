@@ -625,6 +625,29 @@ describe("brightdata client helpers", () => {
     ]);
   });
 
+  it("drops Yandex tabbar navigation results and not-found search decorations", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[ПоискПоиск](https://yandex.kz/?source=tabbar)",
+        "[Карты](https://yandex.kz/maps/?text=upp&source=serp_navig)",
+        "[Переводчик](https://translate.yandex.kz/?text=upp&from=tabbar)",
+        "[Все](https://yandex.kz/all?text=upp&from=tabbar)",
+        "[Useful](https://astral.ru/aj/elem/otlichiya-1s-upp-ot-1s-erp/)",
+        "Сравниваем 1С:УПП и 1С:ERP. Не найдено: [крым](/search/?text=%D0%BA%D1%80%D1%8B%D0%BC)",
+      ].join("\n"),
+    });
+
+    expect(items).toEqual([
+      {
+        title: "Useful",
+        url: "https://astral.ru/aj/elem/otlichiya-1s-upp-ot-1s-erp/",
+        description: "Сравниваем 1С:УПП и 1С:ERP.",
+        siteName: "astral.ru",
+      },
+    ]);
+  });
+
   it("drops noisy Yandex tracker parents even when they contain useful nested blocks", () => {
     const items = __testing.resolveBrightDataSearchItems({
       engine: "yandex",
@@ -667,6 +690,22 @@ describe("brightdata client helpers", () => {
     expect(aggregate?.description).not.toContain('{"1_3gye0":');
   });
 
+  it("removes the full unbalanced Yandex JSON tail from descriptions", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Useful aggregate](https://sevastopol.jobrun.ru/company/remkor)",
+        'Компания РЕМКОР в Севастополе использует УПП 1.3. {"1_mdtv0":{"state":{"foo":"bar"',
+      ].join("\n"),
+    });
+
+    const aggregate = items.find(
+      (item) => item.url === "https://sevastopol.jobrun.ru/company/remkor",
+    );
+
+    expect(aggregate?.description).toBe("Компания РЕМКОР в Севастополе использует УПП 1.3.");
+  });
+
   it("expands useful Yandex description links into additional results", () => {
     const items = __testing.resolveBrightDataSearchItems({
       engine: "yandex",
@@ -692,7 +731,62 @@ describe("brightdata client helpers", () => {
     expect(items[0]?.description).toContain("Yandex aggregate");
   });
 
-  it("keeps Yandex aggregate descriptions so count limits do not erase nested lead names", async () => {
+  it("keeps embedded organic blocks when an earlier Yandex ad marker is closed later", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Yandex aggregate](https://yandex.kz/search/?text=1c)",
+        "[](https://yabs.yandex.kz/count/ad?mirror-type=1&mirror-doc-pos=-1)",
+        "Wazzup24.ru wazzup24.ru › Интеграция-Whatsapp",
+        "[ ## Wazzup - сервис для интеграции WhatsApp с 1С ](https://wazzup24.ru/)",
+        "[](https://it-vacancies.ru/vacancies/303796/) It-vacancies.ru it-vacancies.ru › vacancies",
+        "[ ## Вакансия программист 1с:упп, 1с:бух, 1с:зиуп в городе... ](https://it-vacancies.ru/vacancies/303796/)",
+        "Требуется программист 1с:упп для работы в «SPETZ» в городе Симферополь.",
+        "Реклама Wazzup - это сервис для управления продажами в Ватсап из 1С.",
+      ].join(" "),
+    });
+
+    const spetz = items.find((item) => item.url === "https://it-vacancies.ru/vacancies/303796/");
+
+    expect(spetz?.description).toContain("SPETZ");
+    expect(items.some((item) => item.url.includes("yabs.yandex."))).toBe(false);
+    expect(items.some((item) => item.url === "https://wazzup24.ru/")).toBe(false);
+  });
+
+  it("prioritizes embedded Yandex organic blocks before the aggregate fallback", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: `[Yandex aggregate](https://yandex.kz/search/?text=1c) - ${YANDEX_NESTED_SERP_MARKDOWN}`,
+    });
+
+    expect(items[0]?.url).not.toContain("yandex.kz/search");
+    expect(items.findIndex((item) => item.url === "https://it-vacancies.ru/vacancies/303796/")).toBeLessThan(
+      items.findIndex((item) => item.url === "https://yandex.kz/search/?text=1c"),
+    );
+  });
+
+  it("drops obvious Yandex video carousel items while keeping vacancy results", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Компания РЕМКОР](https://dreamjob.ru/employers/123)",
+        "Отзывы сотрудников о РЕМКОР.",
+        "[Видео по запросу РЕМКОР УПП](https://rutube.ru/video/123)",
+        "Видео-карусель Яндекса.",
+        "[РЕМКОР УПП смотреть онлайн](https://www.youtube.com/watch?v=123)",
+        "Видео с результатами поиска.",
+        "[Программист 1С РЕМКОР](https://finder.work/vacancies/25059869)",
+        "Сопровождение УПП 1.3.",
+      ].join("\n"),
+    });
+
+    expect(items.map((item) => item.url)).toEqual([
+      "https://dreamjob.ru/employers/123",
+      "https://finder.work/vacancies/25059869",
+    ]);
+  });
+
+  it("prioritizes embedded Yandex lead links when count limits the payload", async () => {
     process.env.BRIGHTDATA_API_KEY = "default-token";
     process.env.BRIGHTDATA_CUSTOMER_ID = "customer";
     process.env.BRIGHTDATA_YANDEX_SERP_ZONE = "yandex-zone";
@@ -733,10 +827,8 @@ describe("brightdata client helpers", () => {
     const results = result.results as Array<{ description?: string; url?: string }>;
 
     expect(results).toHaveLength(1);
-    expect(results[0]?.url).toBe("https://yandex.kz/search/?text=1c");
-    expect(results[0]?.description).toContain("SPETZ");
-    expect(results[0]?.description).toContain("НОВАТОР");
-    expect(results[0]?.description).toContain("РЕМКОР");
+    expect(results[0]?.url).not.toContain("yandex.kz/search");
+    expect(results[0]?.description).toContain("Симферополь");
   });
 
   it("extracts Yandex nested SERP blocks with block-specific descriptions", () => {

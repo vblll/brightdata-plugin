@@ -482,12 +482,11 @@ function resolveGoogleSearchItems(rawData: unknown): BrightDataSearchItem[] {
 }
 
 const RESULT_LINK_LINE_RE =
-  /^(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(?:\*\*|__)?\[(.+?)\]\((https?:\/\/[^\s)]+)\)(?:\*\*|__)?(?:\s*(?:[-:|]|[–—])\s*(.+))?$/;
-const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  /^(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+)?(?:\*\*|__)?\[(.+?)\]\(((?:https?:)?\/\/[^\s)]+)\)(?:\*\*|__)?(?:\s*(?:(?:[-:|]|[–—])\s*)?(.+))?$/;
+const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(((?:https?:)?\/\/[^\s)]+)\)/g;
 const YANDEX_NESTED_SERP_BLOCK_RE =
-  /\[\]\((https?:\/\/[^\s)]+)\)\s*.*?\[\s*(?:#{1,6}\s*)?(.+?)\s*\]\((https?:\/\/[^\s)]+)\)/g;
-const YANDEX_AD_BLOCK_RE =
-  /\[\]\((?:https?:\/\/)?[^)]*yabs\.yandex\.[^)]+\)[\s\S]*?Реклама[^.!?]*(?:[.!?]|$)/giu;
+  /\[\]\(((?:https?:)?\/\/[^\s)]+)\)\s*.*?\[\s*(?:#{1,6}\s*)?(.+?)\s*\]\(((?:https?:)?\/\/[^\s)]+)\)/g;
+const YANDEX_AD_TEXT_RE = /(?:^|\s)Реклама[^.!?]*(?:[.!?]|$)/giu;
 const YANDEX_INTERNAL_JSON_MARKERS = [
   "backendurl",
   "encryptedcalleecontext",
@@ -501,7 +500,12 @@ const YANDEX_INTERNAL_JSON_MARKERS = [
 const YANDEX_FOOTER_TITLE_RE =
   /(сообщить об ошибке|google\]\(\/\/www\.google\.com\/search|bing\]\(\/\/www\.bing\.com\/search)/i;
 const YANDEX_PROMO_TEXT_RE = /сделайте\s+яндекс\s+основным\s+поиском/i;
-const TRUNCATED_YANDEX_JSON_TAIL_RE = /\{\s*"1_[a-z0-9]+":/gi;
+const YANDEX_NOT_FOUND_SEARCH_LINK_RE =
+  /\s*Не найдено:\s*\[[^\]]+\]\((?:https?:\/\/[^)]*)?\/search\/\?[^)]*\)/giu;
+const YANDEX_JSON_OBJECT_TAIL_RE = /\\?\{\s*\\?"1_[a-z0-9]+\\?":\s*(?:\\?\{|\\?\[)[\s\S]*$/i;
+const TRUNCATED_YANDEX_JSON_MARKER_RE = /\\?\{\s*\\?"1_[a-z0-9]+\\?":/gi;
+const YANDEX_VIDEO_CAROUSEL_HOST_RE = /(^|\.)((youtube\.com)|(youtu\.be)|(rutube\.ru)|(dzen\.ru))$/i;
+const YANDEX_VIDEO_CAROUSEL_TEXT_RE = /(видео|смотреть\s+онлайн|watch\s+video)/i;
 
 function normalizeMarkdownLine(value: string): string {
   return value
@@ -648,6 +652,13 @@ function isYandexNoiseUrl(urlRaw: string): boolean {
     if (!isYandexHost(host)) {
       return false;
     }
+    if (
+      url.searchParams.get("source") === "tabbar" ||
+      url.searchParams.get("source") === "serp_navig" ||
+      url.searchParams.get("from") === "tabbar"
+    ) {
+      return true;
+    }
     if (host.startsWith("company.yandex.")) {
       return true;
     }
@@ -738,6 +749,12 @@ function normalizeYandexSearchItem(item: BrightDataSearchItem): BrightDataSearch
   if (!url) {
     return undefined;
   }
+  if (isYandexFooterSearchEngineResult(url)) {
+    return undefined;
+  }
+  if (isYandexVideoCarouselItem(item, url)) {
+    return undefined;
+  }
   const description = sanitizeYandexDescription(item.description);
   return {
     ...item,
@@ -753,6 +770,28 @@ function isYandexNoiseTitle(value: string): boolean {
 
 function isYandexNoiseDescription(value: string | undefined): boolean {
   return !!value && YANDEX_PROMO_TEXT_RE.test(value);
+}
+
+function isYandexFooterSearchEngineResult(urlRaw: string): boolean {
+  try {
+    const url = new URL(urlRaw);
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    return (host === "google.com" || host === "bing.com") && url.pathname === "/search";
+  } catch {
+    return false;
+  }
+}
+
+function isYandexVideoCarouselItem(item: BrightDataSearchItem, urlRaw: string): boolean {
+  try {
+    const host = new URL(urlRaw).hostname.toLowerCase().replace(/^www\./, "");
+    if (!YANDEX_VIDEO_CAROUSEL_HOST_RE.test(host)) {
+      return false;
+    }
+    return YANDEX_VIDEO_CAROUSEL_TEXT_RE.test(`${item.title} ${item.description ?? ""}`);
+  } catch {
+    return false;
+  }
 }
 
 function shouldPreserveYandexNoiseParent(item: BrightDataSearchItem): boolean {
@@ -831,15 +870,23 @@ function removeYandexInternalJsonFragments(value: string): string {
   }
 }
 
+function removeYandexAdTrackerLinkedBlocks(value: string): string {
+  return value.replace(YANDEX_NESTED_SERP_BLOCK_RE, (full, sourceUrl) =>
+    isYandexNoiseUrl(String(sourceUrl)) ? " " : full,
+  );
+}
+
 function removeTruncatedYandexJsonTails(value: string): string {
-  return value.replace(TRUNCATED_YANDEX_JSON_TAIL_RE, " ");
+  return value
+    .replace(YANDEX_JSON_OBJECT_TAIL_RE, " ")
+    .replace(TRUNCATED_YANDEX_JSON_MARKER_RE, " ");
 }
 
 function sanitizeYandexDescription(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
   }
-  const withoutAdBlocks = value.replace(YANDEX_AD_BLOCK_RE, " ");
+  const withoutAdBlocks = removeYandexAdTrackerLinkedBlocks(value).replace(YANDEX_AD_TEXT_RE, " ");
   const withoutTrackerLinks = withoutAdBlocks.replace(MARKDOWN_LINK_RE, (full, title, url) => {
     const resolved = resolveYandexSearchUrl(String(url));
     if (!resolved) {
@@ -847,7 +894,8 @@ function sanitizeYandexDescription(value: string | undefined): string | undefine
     }
     return resolved === String(url) ? full : `[${String(title).trim()}](${resolved})`;
   });
-  const withoutInternalJson = removeYandexInternalJsonFragments(withoutTrackerLinks);
+  const withoutNotFoundSearchLinks = withoutTrackerLinks.replace(YANDEX_NOT_FOUND_SEARCH_LINK_RE, " ");
+  const withoutInternalJson = removeYandexInternalJsonFragments(withoutNotFoundSearchLinks);
   const withoutTruncatedJson = removeTruncatedYandexJsonTails(withoutInternalJson);
   const cleaned = withoutTruncatedJson.replace(/\s+/g, " ").trim();
   return cleaned || undefined;
@@ -884,7 +932,12 @@ function extractNestedYandexSerpBlockItems(parent: BrightDataSearchItem): Bright
     const title = cleanYandexSearchText(match[2] ?? "");
     const rawUrl = (match[3] || match[1] || "").trim();
     const url = resolveYandexSearchUrl(rawUrl);
-    if (!title || !url) {
+    if (
+      !title ||
+      !url ||
+      isYandexFooterSearchEngineResult(url) ||
+      isYandexVideoCarouselItem({ ...parent, title }, url)
+    ) {
       continue;
     }
     const snippetStart = (match.index ?? 0) + match[0].length;
@@ -912,7 +965,12 @@ function extractNestedYandexDescriptionItems(parent: BrightDataSearchItem): Brig
     const title = match[1]?.trim() ?? "";
     const rawUrl = match[2]?.trim() ?? "";
     const url = resolveYandexSearchUrl(rawUrl);
-    if (!title || !url) {
+    if (
+      !title ||
+      !url ||
+      isYandexFooterSearchEngineResult(url) ||
+      isYandexVideoCarouselItem({ ...sanitizedParent, title }, url)
+    ) {
       continue;
     }
     nested.push({
@@ -945,15 +1003,20 @@ function resolveYandexSearchItems(items: BrightDataSearchItem[]): BrightDataSear
     const sanitizedItem = { ...item, description: sanitizeYandexDescription(item.description) };
     const blockItems = extractNestedYandexSerpBlockItems(sanitizedItem);
     const normalized = normalizeYandexSearchItem(sanitizedItem);
+    if (blockItems.length > 0) {
+      if (normalized) {
+        expanded.push(normalized);
+      }
+      expanded.push(...blockItems);
+      if (!normalized && shouldPreserveYandexNoiseParent(sanitizedItem)) {
+        expanded.push(sanitizedItem);
+      }
+      continue;
+    }
     if (normalized) {
       expanded.push(normalized);
-    } else if (blockItems.length > 0 && shouldPreserveYandexNoiseParent(sanitizedItem)) {
-      expanded.push(sanitizedItem);
     }
-    expanded.push(...blockItems);
-    if (blockItems.length === 0) {
-      expanded.push(...extractNestedYandexDescriptionItems(sanitizedItem));
-    }
+    expanded.push(...extractNestedYandexDescriptionItems(sanitizedItem));
   }
   return dedupeYandexSearchItemsByUrl(expanded);
 }
