@@ -577,6 +577,96 @@ describe("brightdata client helpers", () => {
     expect(aggregate?.description).not.toContain("futuris-search-tab");
   });
 
+  it("drops remaining Yandex tracker login footer and promo results", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[решения 1С для бизнеса](https://yabs.yandex.kz/count/WhiejI_zOoVX2LbC0cqL01FfdBxMbd029s1Ee8fFWEiD4z2RIy)",
+        "[Войти](https://passport.yandex.kz/auth?retpath=https%3A%2F%2Fyandex.kz%2Fsearch)",
+        "[Google](//www.google.com/search?q=test)[Bing](//www.bing.com/search?q=test) Сообщить об ошибке Настройки [О компании](https://company.yandex.ru/)",
+        "[Сделайте Яндекс основным поиском](https://yandex.kz/search/?text=test)",
+        "[Useful](https://finder.work/company/remkor)",
+      ].join("\n"),
+    });
+
+    expect(items).toEqual([
+      {
+        title: "Useful",
+        url: "https://finder.work/company/remkor",
+        siteName: "finder.work",
+      },
+    ]);
+  });
+
+  it("keeps useful Yandex results with business-like settings titles", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Настройки 1С УПП для производства](https://example.com/upp-settings)",
+        "Полезный сниппет про внедрение УПП.",
+        "[О компании НОВАТОР](https://novator.example/about)",
+        "Завод молочной продукции НОВАТОР использует 1С.",
+      ].join("\n"),
+    });
+
+    expect(items).toEqual([
+      {
+        title: "Настройки 1С УПП для производства",
+        url: "https://example.com/upp-settings",
+        description: "Полезный сниппет про внедрение УПП.",
+        siteName: "example.com",
+      },
+      {
+        title: "О компании НОВАТОР",
+        url: "https://novator.example/about",
+        description: "Завод молочной продукции НОВАТОР использует 1С.",
+        siteName: "novator.example",
+      },
+    ]);
+  });
+
+  it("drops noisy Yandex tracker parents even when they contain useful nested blocks", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Режим энергосбережения](https://yabs.yandex.kz/count/WkeejI_zOo?etext=2202&q=test) -",
+        "[](https://dzen.ru/a/aXdg6ta9h0gSSzd5) Dzen.ru dzen.ru › aXdg6ta9h0gSSzd5",
+        "[ ## Крымский парадокс: почему крупные российские... | Дзен ](https://dzen.ru/a/aXdg6ta9h0gSSzd5)",
+        "**Яндекс**: присутствие без присутствия. Офис **Яндекса** в Симферополе работает с 2006 года.",
+      ].join(" "),
+    });
+
+    expect(items).toEqual([
+      {
+        title: "Крымский парадокс: почему крупные российские... | Дзен",
+        url: "https://dzen.ru/a/aXdg6ta9h0gSSzd5",
+        description:
+          "Яндекс: присутствие без присутствия. Офис Яндекса в Симферополе работает с 2006 года.",
+        siteName: "dzen.ru",
+      },
+    ]);
+  });
+
+  it("removes truncated Yandex JSON tails from descriptions", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Useful aggregate](https://sevastopol.jobrun.ru/company/remkor)",
+        'Ищете работу программистом 1с 8 в Крыму? Компания РЕМКОР в Севастополе срочно ищет сотрудников... {"1_c0xa0":',
+        'Еще полезный текст про вакансию. {"1_3gye0":',
+      ].join("\n"),
+    });
+
+    const aggregate = items.find(
+      (item) => item.url === "https://sevastopol.jobrun.ru/company/remkor",
+    );
+
+    expect(aggregate?.description).toContain("Компания РЕМКОР");
+    expect(aggregate?.description).toContain("Еще полезный текст");
+    expect(aggregate?.description).not.toContain('{"1_c0xa0":');
+    expect(aggregate?.description).not.toContain('{"1_3gye0":');
+  });
+
   it("expands useful Yandex description links into additional results", () => {
     const items = __testing.resolveBrightDataSearchItems({
       engine: "yandex",

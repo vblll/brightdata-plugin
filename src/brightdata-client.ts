@@ -498,6 +498,10 @@ const YANDEX_INTERNAL_JSON_MARKERS = [
   "futuris",
   "futuris-search-tab",
 ];
+const YANDEX_FOOTER_TITLE_RE =
+  /(сообщить об ошибке|google\]\(\/\/www\.google\.com\/search|bing\]\(\/\/www\.bing\.com\/search)/i;
+const YANDEX_PROMO_TEXT_RE = /сделайте\s+яндекс\s+основным\s+поиском/i;
+const TRUNCATED_YANDEX_JSON_TAIL_RE = /\{\s*"1_[a-z0-9]+":/gi;
 
 function normalizeMarkdownLine(value: string): string {
   return value
@@ -644,6 +648,9 @@ function isYandexNoiseUrl(urlRaw: string): boolean {
     if (!isYandexHost(host)) {
       return false;
     }
+    if (host.startsWith("company.yandex.")) {
+      return true;
+    }
     return pathname.includes("/search") || /\/(?:an|ad)\/count(?:\/|$)/.test(pathname);
   } catch {
     return false;
@@ -681,7 +688,8 @@ function decodeUrlCandidate(value: string): string[] {
 
 function normalizeHttpUrl(value: string): string | undefined {
   try {
-    const url = new URL(value.trim());
+    const trimmed = value.trim();
+    const url = new URL(trimmed.startsWith("//") ? `https:${trimmed}` : trimmed);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       return undefined;
     }
@@ -723,6 +731,9 @@ function resolveYandexSearchUrl(urlRaw: string): string | undefined {
 }
 
 function normalizeYandexSearchItem(item: BrightDataSearchItem): BrightDataSearchItem | undefined {
+  if (isYandexNoiseTitle(item.title) || isYandexNoiseDescription(item.description)) {
+    return undefined;
+  }
   const url = resolveYandexSearchUrl(item.url);
   if (!url) {
     return undefined;
@@ -734,6 +745,25 @@ function normalizeYandexSearchItem(item: BrightDataSearchItem): BrightDataSearch
     description,
     siteName: resolveSiteName(url),
   };
+}
+
+function isYandexNoiseTitle(value: string): boolean {
+  return YANDEX_FOOTER_TITLE_RE.test(value) || YANDEX_PROMO_TEXT_RE.test(value);
+}
+
+function isYandexNoiseDescription(value: string | undefined): boolean {
+  return !!value && YANDEX_PROMO_TEXT_RE.test(value);
+}
+
+function shouldPreserveYandexNoiseParent(item: BrightDataSearchItem): boolean {
+  try {
+    const url = new URL(item.url);
+    const host = url.hostname.toLowerCase();
+    const pathname = url.pathname.toLowerCase();
+    return isYandexHost(host) && pathname.includes("/search") && !host.startsWith("passport.");
+  } catch {
+    return false;
+  }
 }
 
 function findBalancedObjectEnd(value: string, openIndex: number): number {
@@ -801,6 +831,10 @@ function removeYandexInternalJsonFragments(value: string): string {
   }
 }
 
+function removeTruncatedYandexJsonTails(value: string): string {
+  return value.replace(TRUNCATED_YANDEX_JSON_TAIL_RE, " ");
+}
+
 function sanitizeYandexDescription(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -814,7 +848,8 @@ function sanitizeYandexDescription(value: string | undefined): string | undefine
     return resolved === String(url) ? full : `[${String(title).trim()}](${resolved})`;
   });
   const withoutInternalJson = removeYandexInternalJsonFragments(withoutTrackerLinks);
-  const cleaned = withoutInternalJson.replace(/\s+/g, " ").trim();
+  const withoutTruncatedJson = removeTruncatedYandexJsonTails(withoutInternalJson);
+  const cleaned = withoutTruncatedJson.replace(/\s+/g, " ").trim();
   return cleaned || undefined;
 }
 
@@ -912,7 +947,7 @@ function resolveYandexSearchItems(items: BrightDataSearchItem[]): BrightDataSear
     const normalized = normalizeYandexSearchItem(sanitizedItem);
     if (normalized) {
       expanded.push(normalized);
-    } else if (blockItems.length > 0) {
+    } else if (blockItems.length > 0 && shouldPreserveYandexNoiseParent(sanitizedItem)) {
       expanded.push(sanitizedItem);
     }
     expanded.push(...blockItems);
