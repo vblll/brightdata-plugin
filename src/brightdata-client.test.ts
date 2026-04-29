@@ -648,6 +648,33 @@ describe("brightdata client helpers", () => {
     ]);
   });
 
+  it("drops Yandex legal jobs direct and image-only chrome results", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Вакансии](https://yandex.ru/jobs)",
+        "Работа в Яндексе.",
+        "[Лицензия на использование](https://yandex.kz/legal/termsofuse/)",
+        "Условия использования сервисов Яндекса.",
+        "[Политика конфиденциальности](https://yandex.kz/legal/confidential/)",
+        "Правила обработки данных.",
+        "[Direct](https://yandex.kz/search/direct?text=upp)",
+        "[![Логотип](https://avatars.mds.yandex.net/get-serp/123/orig)](https://avatars.mds.yandex.net/get-serp/123/orig)",
+        "[Useful](https://finder.work/vacancies/25059869)",
+        "Сопровождение УПП 1.3.",
+      ].join("\n"),
+    });
+
+    expect(items).toEqual([
+      {
+        title: "Useful",
+        url: "https://finder.work/vacancies/25059869",
+        description: "Сопровождение УПП 1.3.",
+        siteName: "finder.work",
+      },
+    ]);
+  });
+
   it("drops noisy Yandex tracker parents even when they contain useful nested blocks", () => {
     const items = __testing.resolveBrightDataSearchItems({
       engine: "yandex",
@@ -688,6 +715,38 @@ describe("brightdata client helpers", () => {
     expect(aggregate?.description).toContain("Еще полезный текст");
     expect(aggregate?.description).not.toContain('{"1_c0xa0":');
     expect(aggregate?.description).not.toContain('{"1_3gye0":');
+  });
+
+  it("removes escaped one and two prefix Yandex JSON tails from descriptions", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Useful one](https://finder.work/vacancies/one)",
+        'Компания SPETZ использует УПП. {\\"1_abcd0\\":{\\"state\\":{\\"foo\\":\\"bar\\"',
+        "[Useful two](https://finder.work/vacancies/two)",
+        'Компания РЕМКОР использует УПП. {"2_wxyz0":{"state":{"foo":"bar"',
+      ].join("\n"),
+    });
+
+    const one = items.find((item) => item.url === "https://finder.work/vacancies/one");
+    const two = items.find((item) => item.url === "https://finder.work/vacancies/two");
+
+    expect(one?.description).toBe("Компания SPETZ использует УПП.");
+    expect(two?.description).toBe("Компания РЕМКОР использует УПП.");
+  });
+
+  it("cuts bare Yandex JSON marker tails at the end of descriptions", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[Контакты](https://portal-yug.ru/contacts/)",
+        '+7 (3652) 500-869. Перенос данных из 1С:УПП в 1С:БП. {"1_fkei0":',
+      ].join("\n"),
+    });
+
+    expect(items[0]?.description).toBe(
+      "+7 (3652) 500-869. Перенос данных из 1С:УПП в 1С:БП.",
+    );
   });
 
   it("removes the full unbalanced Yandex JSON tail from descriptions", () => {
@@ -784,6 +843,24 @@ describe("brightdata client helpers", () => {
       "https://dreamjob.ru/employers/123",
       "https://finder.work/vacancies/25059869",
     ]);
+  });
+
+  it("drops Yandex video carousel artifacts by carousel markers", () => {
+    const items = __testing.resolveBrightDataSearchItems({
+      engine: "yandex",
+      body: [
+        "[РЕМКОР УПП](https://rutube.ru/video/abc)",
+        "https://yandex.kz/video/preview/123?from_type=carousel",
+        "[Настройка УПП](https://www.youtube.com/watch?v=abc)",
+        "from_type=carousel",
+        "[Дзен видео про УПП](https://dzen.ru/video/watch/abc)",
+        "/video/preview/abc",
+        "[РЕМКОР вакансия](https://finder.work/vacancies/25059869)",
+        "Сопровождение УПП 1.3.",
+      ].join("\n"),
+    });
+
+    expect(items.map((item) => item.url)).toEqual(["https://finder.work/vacancies/25059869"]);
   });
 
   it("prioritizes embedded Yandex lead links when count limits the payload", async () => {

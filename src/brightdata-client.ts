@@ -502,10 +502,13 @@ const YANDEX_FOOTER_TITLE_RE =
 const YANDEX_PROMO_TEXT_RE = /сделайте\s+яндекс\s+основным\s+поиском/i;
 const YANDEX_NOT_FOUND_SEARCH_LINK_RE =
   /\s*Не найдено:\s*\[[^\]]+\]\((?:https?:\/\/[^)]*)?\/search\/\?[^)]*\)/giu;
-const YANDEX_JSON_OBJECT_TAIL_RE = /\\?\{\s*\\?"1_[a-z0-9]+\\?":\s*(?:\\?\{|\\?\[)[\s\S]*$/i;
-const TRUNCATED_YANDEX_JSON_MARKER_RE = /\\?\{\s*\\?"1_[a-z0-9]+\\?":/gi;
+const YANDEX_JSON_OBJECT_TAIL_RE = /\\?\{\s*\\?"[12]_[a-z0-9]+\\?":\s*(?:\\?\{|\\?\[)[\s\S]*$/i;
+const TRUNCATED_YANDEX_JSON_MARKER_RE = /\\?\{\s*\\?"[12]_[a-z0-9]+\\?":/gi;
 const YANDEX_VIDEO_CAROUSEL_HOST_RE = /(^|\.)((youtube\.com)|(youtu\.be)|(rutube\.ru)|(dzen\.ru))$/i;
-const YANDEX_VIDEO_CAROUSEL_TEXT_RE = /(видео|смотреть\s+онлайн|watch\s+video)/i;
+const YANDEX_VIDEO_CAROUSEL_TEXT_RE =
+  /(видео|смотреть\s+онлайн|watch\s+video|from_type=carousel|\/video\/preview\/)/i;
+const YANDEX_FOOTER_LEGAL_TITLE_RE =
+  /^(?:вакансии|лицензия на использование|политика конфиденциальности)$/i;
 
 function normalizeMarkdownLine(value: string): string {
   return value
@@ -649,6 +652,9 @@ function isYandexNoiseUrl(urlRaw: string): boolean {
     const url = new URL(urlRaw);
     const host = url.hostname.toLowerCase();
     const pathname = url.pathname.toLowerCase();
+    if (host === "avatars.mds.yandex.net") {
+      return true;
+    }
     if (!isYandexHost(host)) {
       return false;
     }
@@ -662,7 +668,13 @@ function isYandexNoiseUrl(urlRaw: string): boolean {
     if (host.startsWith("company.yandex.")) {
       return true;
     }
-    return pathname.includes("/search") || /\/(?:an|ad)\/count(?:\/|$)/.test(pathname);
+    return (
+      pathname === "/jobs" ||
+      pathname.startsWith("/legal/") ||
+      pathname.startsWith("/search/direct") ||
+      pathname.includes("/search") ||
+      /\/(?:an|ad)\/count(?:\/|$)/.test(pathname)
+    );
   } catch {
     return false;
   }
@@ -742,11 +754,18 @@ function resolveYandexSearchUrl(urlRaw: string): string | undefined {
 }
 
 function normalizeYandexSearchItem(item: BrightDataSearchItem): BrightDataSearchItem | undefined {
-  if (isYandexNoiseTitle(item.title) || isYandexNoiseDescription(item.description)) {
+  if (
+    isYandexNoiseTitle(item.title) ||
+    isYandexNoiseDescription(item.description) ||
+    isYandexImageOnlyItem(item)
+  ) {
     return undefined;
   }
   const url = resolveYandexSearchUrl(item.url);
   if (!url) {
+    return undefined;
+  }
+  if (isYandexFooterLegalItem(item, url)) {
     return undefined;
   }
   if (isYandexFooterSearchEngineResult(url)) {
@@ -770,6 +789,19 @@ function isYandexNoiseTitle(value: string): boolean {
 
 function isYandexNoiseDescription(value: string | undefined): boolean {
   return !!value && YANDEX_PROMO_TEXT_RE.test(value);
+}
+
+function isYandexImageOnlyItem(item: BrightDataSearchItem): boolean {
+  return item.title.trim().startsWith("![");
+}
+
+function isYandexFooterLegalItem(item: BrightDataSearchItem, urlRaw: string): boolean {
+  try {
+    const host = new URL(urlRaw).hostname.toLowerCase();
+    return isYandexHost(host) && YANDEX_FOOTER_LEGAL_TITLE_RE.test(cleanYandexSearchText(item.title));
+  } catch {
+    return false;
+  }
 }
 
 function isYandexFooterSearchEngineResult(urlRaw: string): boolean {
@@ -1045,12 +1077,16 @@ function buildSearchPayload(params: {
       provider: "brightdata",
       wrapped: true,
     },
-    results: params.items.map((entry) => ({
-      title: entry.title ? wrapWebContent(entry.title, "web_search") : "",
-      url: entry.url,
-      description: entry.description ? wrapWebContent(entry.description, "web_search") : "",
-      ...(entry.siteName ? { siteName: entry.siteName } : {}),
-    })),
+    results: params.items.map((entry) => {
+      const description =
+        params.engine === "yandex" ? sanitizeYandexDescription(entry.description) : entry.description;
+      return {
+        title: entry.title ? wrapWebContent(entry.title, "web_search") : "",
+        url: entry.url,
+        description: description ? wrapWebContent(description, "web_search") : "",
+        ...(entry.siteName ? { siteName: entry.siteName } : {}),
+      };
+    }),
   };
 }
 
