@@ -50,6 +50,11 @@
       "help": "Default polling timeout in seconds for dataset-backed Bright Data tools."
     }
   },
+  "contracts": {
+    "webSearchProviders": [
+      "brightdata"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
